@@ -82,9 +82,6 @@ Este projeto contém uma API em Flask que gerencia um catálogo de produtos e pe
 
   Retorna os detalhes do cliente logado ou todos os clientes cadastrados.
 
-- **Logout (DELETE /login)**
-
-  Exclui o login de um cliente.
 
 ### Produtos
 
