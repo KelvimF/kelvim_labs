@@ -1,284 +1,343 @@
+import re
+import requests
 from flask import Flask, request, jsonify
 from pymongo import MongoClient
 from bson.objectid import ObjectId
 
 app = Flask(__name__)
 
-# Configuração inicial do MongoDB
+# Configuração do MongoDB
 client = MongoClient("mongodb://localhost:27017/")
-db = client['api_db'] 
+db = client['api_db']
 clientes = db['clientes']
 produtos = db['produtos']
 
+# Função para criar a URL de listagem de produtos
+def criar_url_listagem_produtos(pagina=1):
+    return f"http://challenge-api.luizalabs.com/api/product/?page={pagina}"
 
+# Função para criar a URL de detalhe de produto
+def criar_url_detalhe_produto(produto_id):
+    return f"http://challenge-api.luizalabs.com/api/product/{produto_id}/"
 
-# Rota inicial de configuração do Flask
-@app.route('/')
-def home():
-    return "Flask configurado com sucesso!"
+# Rota inicial e configuração do flask (GET)
+@app.route('/', methods=['GET'])
+def index():
+    return jsonify({"message": "Bem-vindo à API Flask! O servidor está rodando."}), 200
 
-
-
-# Rota de conexão com o MongoDB
-@app.route('/test-db')
-def test_db():
-    try:
-        db.command("ping")
-        return "Conexão com o MongoDB estabelecida com sucesso!"
-    except Exception as e:
-        return f"Erro ao conectar ao MongoDB: {e}"
-
-
-
-# Rota para criar clientes
-@app.route("/clientes", methods=["POST"])
-def criar_clientes():
+# Rota para criar clientes (POST)
+@app.route('/clientes', methods=['POST'])
+def criar_cliente():
     data = request.json
-    
-    # Verifica se os campos obrigatórios estão presentes
-    if not data.get("nome") or not data.get("email"):
-        return jsonify({"erro": "Nome e email são obrigatórios. Preencha todos os campos para continuar o cadastro"}), 400
-    
-    # Verifica se o e-mail já está cadastrado
-    if clientes.find_one({"email": data["email"]}):
-        return jsonify({"erro": "Email já está em uso."}), 400
+    nome = data.get('nome')
+    email = data.get('email')
+    senha = data.get('senha')
 
-    # Criação de novos clientes
+    if not nome or not email or not senha:
+        return jsonify({"erro": "Nome, email e senha são obrigatórios"}), 400
+
+    # Verifica se o email já está registrado
+    if clientes.find_one({"email": email}):
+        return jsonify({"erro": "Email já registrado"}), 400
+
+    # Criação do novo cliente
     novo_cliente = {
-        "nome": data["nome"],
-        "email": data["email"],
-        "telefone": data.get("telefone")
+        "name": nome,
+        "email": email,
+        "password": senha,  # Senha sem criptografia conforme solicitado
+        "favorites": []  # Inicializa a lista de favoritos vazia
     }
+
     result = clientes.insert_one(novo_cliente)
+    cliente_id = str(result.inserted_id)
 
-    # Retorna o ID do cliente que foi criado
-    return jsonify({"_id": str(result.inserted_id)}), 201
+    return jsonify({"_id": cliente_id}), 201
 
+# Rota para listar clientes (GET)
+@app.route('/clientes', methods=['GET'])
+def listar_clientes():
+    all_clientes = clientes.find()
+    clientes_list = []
+    for cliente in all_clientes:
+        cliente['_id'] = str(cliente['_id'])  # Converte ObjectId para string
+        clientes_list.append(cliente)
+    return jsonify(clientes_list), 200
 
-
-# Rota para listar os clientes cadastrados na API
-@app.route("/clientes", methods=["GET"])
-def list_customers():
-    try:
-        print("Recebendo requisição para listar clientes...")
-        listar_clientes = [
-            {**cliente, "_id": str(cliente["_id"])}
-            for cliente in clientes.find()
-        ]
-        print(f"{len(listar_clientes)} clientes encontrados.")
-        return jsonify(listar_clientes), 200
-    except Exception as e:
-        print(f"Erro ao listar clientes: {e}")
-        return jsonify({"erro": f"Erro ao listar clientes: {e}"}), 500
-
-
-
-# Atualização de cadastro de clientes
-@app.route("/clientes/<id_cliente>", methods=["PUT"])
-def update_customer(id_cliente):
+# Rota para editar cliente (PUT)
+@app.route('/clientes/<id_cliente>', methods=['PUT'])
+def editar_cliente(id_cliente):
     data = request.json
-    if not data:
-        return jsonify({"erro": "Dados para atualização não fornecidos"}), 400
+    nome = data.get('name')
+    email = data.get('email')
+    senha = data.get('password')
 
-    update_fields = {key: data[key] for key in data if key in {"nome", "email", "telefone"}}
-    if not update_fields:
-        return jsonify({"erro": "Nenhum campo válido para atualização"}), 400
+    if not nome and not email and not senha:
+        return jsonify({"erro": "Pelo menos um campo (nome, email ou senha) deve ser informado"}), 400
 
-    try:
-        result = clientes.update_one({"_id": ObjectId(id_cliente)}, {"$set": update_fields})
-        if result.matched_count == 0:
-            return jsonify({"erro": "Cliente não encontrado"}), 404
-
-        return jsonify({"message": "Cliente atualizado com sucesso"}), 200
-    except Exception as e:
-        return jsonify({"erro": f"Erro ao atualizar cliente: {e}"}), 500
-
-
-
-# Exclusão de cadastro de clientes
-@app.route("/clientes/<id_cliente>", methods=["DELETE"])
-def deletar_clientes(id_cliente):
-    try:
-        result = clientes.delete_one({"_id": ObjectId(id_cliente)})
-        if result.deleted_count == 0:
-            return jsonify({"erro": "Cliente não encontrado"}), 404
-        return jsonify({"message": "Cliente deletado com sucesso"}), 200
-    except Exception as e:
-        return jsonify({"erro": f"Erro ao deletar cliente: {e}"}), 500
-
-
-
-# Rota para adicionar produtos
-@app.route("/produtos", methods=["POST"])
-def adicionar_produto():
-    data = request.json
-    navigation_id = data.get("navigation_id")
-    nome = data.get("nome")
-    preco = data.get("preco")
-
-    if not navigation_id or not nome or not preco:
-        return jsonify({"erro": "navigation_id, nome e preco são obrigatórios"}), 400
-
-    # Verifica se o produto já existe
-    produto_existente = produtos.find_one({"navigation_id": navigation_id})
-    if produto_existente:
-        return jsonify({"erro": "Produto já existe"}), 400
-
-    # Cria um novo produto
-    novo_produto = {
-        "navigation_id": navigation_id,
-        "nome": nome,
-        "preco": preco
-    }
-    result = produtos.insert_one(novo_produto)
-
-    return jsonify({"_id": str(result.inserted_id), "navigation_id": navigation_id}), 201
-
-
-# Rota para listar produtos
-@app.route("/produtos", methods=["GET"])
-def listar_produtos():
-    # Recupera todos os produtos da coleção 'produtos'
-    lista_produtos = list(produtos.find())
-    
-    if not lista_produtos:
-        return jsonify({"message": "Nenhum produto encontrado"}), 200
-    
-    # Formata a resposta
-    produtos_formatados = [
-        {**produto, "_id": str(produto["_id"])} for produto in lista_produtos
-    ]
-    
-    return jsonify(produtos_formatados), 200
-
-
-# Rota para atualizar um produto
-@app.route("/produtos/<navigation_id>", methods=["PUT"])
-def atualizar_produto(navigation_id):
-    data = request.json
-    nome = data.get("nome")
-    preco = data.get("preco")
-
-    if not nome and not preco:
-        return jsonify({"erro": "Nome ou preço precisam ser fornecidos"}), 400
-
-    # Verifica se o produto existe
-    produto = produtos.find_one({"navigation_id": navigation_id})
-    if not produto:
-        return jsonify({"erro": "Produto não encontrado"}), 404
-
-    # Atualiza o produto
+    # Atualiza os campos fornecidos
     update_fields = {}
     if nome:
-        update_fields["nome"] = nome
-    if preco:
-        update_fields["preco"] = preco
+        update_fields['name'] = nome
+    if email:
+        update_fields['email'] = email
+    if senha:
+        update_fields['password'] = senha
 
-    produtos.update_one(
-        {"navigation_id": navigation_id},
-        {"$set": update_fields}
-    )
+    clientes.update_one({"_id": ObjectId(id_cliente)}, {"$set": update_fields})
+    return jsonify({"message": "Cliente atualizado com sucesso"}), 200
 
-    return jsonify({"message": "Produto atualizado com sucesso"}), 200
+# Rota para deletar cliente (DELETE)
+@app.route('/clientes/<id_cliente>', methods=['DELETE'])
+def deletar_cliente(id_cliente):
+    clientes.delete_one({"_id": ObjectId(id_cliente)})
+    return jsonify({"message": "Cliente deletado com sucesso"}), 200
 
-
-# Rota para excluir um produto
-@app.route("/produtos/<navigation_id>", methods=["DELETE"])
-def excluir_produto(navigation_id):
-    # Verifica se o produto existe
-    produto = produtos.find_one({"navigation_id": navigation_id})
-    if not produto:
-        return jsonify({"erro": "Produto não encontrado"}), 404
-
-    # Remove o produto
-    produtos.delete_one({"navigation_id": navigation_id})
-
-    return jsonify({"message": "Produto excluído com sucesso"}), 200
-
-
-
-# Rota para favoritos
-@app.route("/clientes/<id_cliente>/favoritos", methods=["POST"])
-def adicionar_favorito(id_cliente):
+# Rota para login (POST)
+@app.route('/login', methods=['POST'])
+def login():
     data = request.json
-    navigation_id = data.get("navigation_id")
-    
-    if not navigation_id:
-        return jsonify({"erro": "Navigation ID é obrigatório"}), 400
+    email = data.get('email')
+    senha = data.get('password')
 
-    # Verifica se o produto existe na coleção de produtos
-    produto = produtos.find_one({"navigation_id": navigation_id})
-    if not produto:
-        return jsonify({"erro": "Produto com o navigation ID não encontrado"}), 404
+    if not email or not senha:
+        return jsonify({"erro": "Email e senha são obrigatórios"}), 400
 
     # Verifica se o cliente existe
-    cliente = clientes.find_one({"_id": ObjectId(id_cliente)})
+    cliente = clientes.find_one({"email": email})
     if not cliente:
         return jsonify({"erro": "Cliente não encontrado"}), 404
 
-    # Verifica se o navigation_id já está nos favoritos
-    if "favoritos" in cliente and navigation_id in cliente["favoritos"]:
-        return jsonify({"erro": "Produto já está nos favoritos"}), 400
+    # Verifica a senha
+    if cliente["password"] != senha:
+        return jsonify({"erro": "Senha incorreta"}), 400
 
-    # Adiciona o navigation_id aos favoritos do cliente
-    clientes.update_one(
-        {"_id": ObjectId(id_cliente)},
-        {"$push": {"favoritos": navigation_id}}
-    )
+    return jsonify({"message": "Login bem-sucedido"}), 200
 
-    return jsonify({"message": "Produto adicionado aos favoritos com sucesso"}), 201
+# Rota para listar os usuários logados (GET)
+@app.route('/login', methods=['GET'])
+def get_cliente():
+    email = request.args.get('email')  # Email será passado como parâmetro na URL
+
+    if not email:
+        # Retorna todos os IDs e emails logados
+        all_clientes = clientes.find({}, {"_id": 1, "email": 1})
+        clientes_list = [
+            {"_id": str(cliente["_id"]), "email": cliente.get("email", "Email não informado")}
+            for cliente in all_clientes
+        ]
+        return jsonify({"clientes": clientes_list}), 200
+
+    # Busca um cliente específico pelo email
+    cliente = clientes.find_one({"email": email})
+    if not cliente:
+        return jsonify({"erro": "Cliente não encontrado"}), 404
+
+    # Retorna informações básicas do cliente
+    return jsonify({
+        "_id": str(cliente["_id"]),  # Converte ObjectId para string
+        "name": cliente.get("name", "Nome não informado"),
+    }), 200
 
 
+# Função para buscar produto no banco de dados (simulando a busca na API externa)
+def buscar_produto_externo(navigation_id):
+    produto = produtos.find_one({"navigation_id": navigation_id})
+    if produto:
+        # Converte o ObjectId para string e retorna os dados do produto
+        produto['_id'] = str(produto['_id'])
+        return produto
+    return None
 
-# Rota para listar os favoritos do cliente
+# Rota para adicionar produto aos favoritos (POST)
+@app.route("/clientes/<id_cliente>/favoritos", methods=["POST"])
+def adicionar_favorito(id_cliente):
+    try:
+        data = request.json
+        navigation_id = data.get("navigation_id")
+
+        if not navigation_id:
+            return jsonify({"erro": "Navigation ID é obrigatório"}), 400
+
+        # Busca o produto no banco de dados
+        product_data = buscar_produto_externo(navigation_id)
+        if not product_data:
+            return jsonify({"erro": "Produto não encontrado"}), 404
+
+        # Verifica se o cliente existe
+        try:
+            cliente = clientes.find_one({"_id": ObjectId(id_cliente)})
+        except Exception:
+            return jsonify({"erro": "ID de cliente inválido"}), 400
+
+        if not cliente:
+            return jsonify({"erro": "Cliente não encontrado"}), 404
+
+        # Verifica se o produto já está nos favoritos
+        favoritos = cliente.get("favorites", [])
+        if any(f["navigation_id"] == navigation_id for f in favoritos):
+            return jsonify({"erro": "Produto já está nos favoritos"}), 400
+
+        # Adiciona o produto aos favoritos
+        clientes.update_one(
+            {"_id": ObjectId(id_cliente)},
+            {"$push": {"favorites": {
+                "navigation_id": product_data.get('navigation_id'),
+                "title": product_data.get('title'),
+                "price": product_data.get('price'),
+                "image": product_data.get('image'),
+                "brand": product_data.get('brand'),
+                "review_score": product_data.get('review_score', None)  # Valor padrão
+            }}}
+        )
+
+        return jsonify({"message": "Produto adicionado aos favoritos com sucesso"}), 201
+
+    except Exception as e:
+        print(f"Erro ao adicionar favorito: {e}")
+        return jsonify({"erro": "Erro interno no servidor"}), 500
+
+# Rota para listar os favoritos de um cliente (GET)
 @app.route("/clientes/<id_cliente>/favoritos", methods=["GET"])
 def listar_favoritos(id_cliente):
     cliente = clientes.find_one({"_id": ObjectId(id_cliente)})
     if not cliente:
         return jsonify({"erro": "Cliente não encontrado"}), 404
 
-    # Recupera os navigation_ids dos favoritos
-    favoritos_ids = cliente.get("favoritos", [])
-    if not favoritos_ids:
-        return jsonify({"message": "Nenhum navigation ID nos favoritos"}), 200
+    # Recupera os produtos favoritos do cliente
+    favoritos = cliente.get("favorites", [])
+    if not favoritos:
+        return jsonify({"message": "Nenhum produto nos favoritos"}), 200
 
-    # Encontra os detalhes dos navigation_ids
-    produtos_favoritos = []
-    for navigation_id in favoritos_ids:
-        produto = produtos.find_one({"navigation_id": navigation_id})
-        if produto:
-            produtos_favoritos.append({
-                "navigation_id": produto["navigation_id"],
-                "nome": produto.get("nome"),
-                "preco": produto.get("preco"),
-            })
+    return jsonify(favoritos), 200
 
-    return jsonify(produtos_favoritos), 200
-
-
-
-# Rota para exclusão dos itens nos favoritos
+# Rota para remover produto dos favoritos (DELETE)
 @app.route("/clientes/<id_cliente>/favoritos/<navigation_id>", methods=["DELETE"])
 def remover_favorito(id_cliente, navigation_id):
     cliente = clientes.find_one({"_id": ObjectId(id_cliente)})
     if not cliente:
         return jsonify({"erro": "Cliente não encontrado"}), 404
 
-    # Verifica se o navigation_id está nos favoritos
-    if "favoritos" not in cliente or navigation_id not in cliente["favoritos"]:
-        return jsonify({"erro": "Navigation ID não encontrado nos favoritos"}), 404
+    # Verifica se o produto está nos favoritos
+    if not any(f["navigation_id"] == navigation_id for f in cliente.get("favorites", [])):
+        return jsonify({"erro": "Produto não encontrado nos favoritos"}), 404
 
-    # Remove o navigation_id dos favoritos
+    # Remove o produto dos favoritos
     clientes.update_one(
         {"_id": ObjectId(id_cliente)},
-        {"$pull": {"favoritos": navigation_id}}
+        {"$pull": {"favorites": {"navigation_id": navigation_id}}}
     )
 
-    return jsonify({"message": "Navigation ID removido dos favoritos com sucesso"}), 200
+    return jsonify({"message": "Produto removido dos favoritos com sucesso"}), 200
 
+# Rota para criar produtos (POST)
+@app.route('/produtos', methods=['POST'])
+def criar_produto():
+    data = request.json
+    title = data.get('title')
+    price = data.get('price')
+    description = data.get('description')
+    image = data.get('image')
+    brand = data.get('brand')
+    navigation_id = data.get('navigation_id')
 
+    # Validações dos campos obrigatórios
+    if not title or not price or not description or not image or not brand or not navigation_id:
+        return jsonify({"erro": "Title, price, description, image, brand e navigation_id são obrigatórios"}), 400
 
+    # Valida o formato do navigation_id (alfanumérico, 10 caracteres)
+    if not re.fullmatch(r'^[a-zA-Z0-9]{10}$', navigation_id):
+        return jsonify({"erro": "O navigation_id deve ser alfanumérico e conter exatamente 10 caracteres"}), 400
 
+    # Verifica se o navigation_id já existe
+    if produtos.find_one({"navigation_id": navigation_id}):
+        return jsonify({"erro": "Já existe um produto com este navigation_id"}), 400
 
+    # Criação do novo produto
+    novo_produto = {
+        "title": title,
+        "price": price,
+        "description": description,
+        "image": image,
+        "brand": brand,
+        "navigation_id": navigation_id  # Adiciona o navigation_id ao documento
+    }
+
+    result = produtos.insert_one(novo_produto)
+    produto_id = str(result.inserted_id)
+
+    return jsonify({"_id": produto_id}), 201
+
+# Rota para listar produtos (GET)
+@app.route('/produtos', methods=['GET'])
+@app.route('/produtos/<id_produto>', methods=['GET'])
+def listar_produtos(id_produto=None):
+    if id_produto:
+        # Caso o ID do produto seja informado na URL, retorna o produto correspondente
+        try:
+            produto = produtos.find_one({"_id": ObjectId(id_produto)})
+        except:
+            return jsonify({"erro": "ID do produto inválido"}), 400
+
+        if not produto:
+            return jsonify({"erro": "Produto não encontrado"}), 404
+
+        produto['_id'] = str(produto['_id'])  # Converte ObjectId para string
+        return jsonify(produto), 200
+
+    # Busca por navigation_id via query string
+    navigation_id = request.args.get('navigation_id')
+    if navigation_id:
+        produto = produtos.find_one({"navigation_id": navigation_id})
+        if not produto:
+            return jsonify({"erro": "Produto com o navigation_id informado não encontrado"}), 404
+
+        produto['_id'] = str(produto['_id'])  # Converte ObjectId para string
+        return jsonify(produto), 200
+
+    # Caso contrário, retorna todos os produtos
+    all_produtos = produtos.find()
+    produtos_list = []
+    for produto in all_produtos:
+        produto['_id'] = str(produto['_id'])
+        produtos_list.append(produto)
+
+    return jsonify(produtos_list), 200
+
+# Rota para editar produto (PUT)
+@app.route('/produtos/<id_produto>', methods=['PUT'])
+def editar_produto(id_produto):
+    data = request.json
+    title = data.get('title')
+    price = data.get('price')
+    description = data.get('description')
+    image = data.get('image')
+    brand = data.get('brand')
+
+    if not title and not price and not description and not image and not brand:
+        return jsonify({"erro": "Pelo menos um campo (title, price, description, image ou brand) deve ser informado"}), 400
+
+    # Atualiza os campos fornecidos
+    update_fields = {}
+    if title:
+        update_fields['title'] = title
+    if price:
+        update_fields['price'] = price
+    if description:
+        update_fields['description'] = description
+    if image:
+        update_fields['image'] = image
+    if brand:
+        update_fields['brand'] = brand
+
+    produtos.update_one({"_id": ObjectId(id_produto)}, {"$set": update_fields})
+    return jsonify({"message": "Produto atualizado com sucesso"}), 200
+
+# Rota para deletar produto (DELETE)
+@app.route('/produtos/<id_produto>', methods=['DELETE'])
+def deletar_produto(id_produto):
+    produtos.delete_one({"_id": ObjectId(id_produto)})
+    return jsonify({"message": "Produto deletado com sucesso"}), 200
+
+# Rodando a aplicação Flask
 if __name__ == '__main__':
     app.run(debug=True)
